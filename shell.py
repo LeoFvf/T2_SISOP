@@ -2,10 +2,6 @@ from operations import FileSystemOperations, DIR_DIRECTORY
 
 
 class FileSystemShell:
-    def __init__(self):
-        self.fs_ops = FileSystemOperations()
-        self.current_path = "/"
-
     def run(self):
         print("Bem-vindo ao shell do sistema de arquivos!")
         while True:
@@ -24,6 +20,8 @@ class FileSystemShell:
             elif command.startswith("create"):
                 path = command[7:].strip()
                 self.fs_ops.create(path)
+            elif command.startswith("write"):
+                self.handle_write(command[6:].strip())
             elif command == "init":
                 self.fs_ops.initialize_filesystem()
             elif command.startswith("unlink"):
@@ -39,20 +37,26 @@ class FileSystemShell:
             else:
                 print("Comando não reconhecido.")
 
-    def change_directory(self, path):
-        if path == "/":
-            self.current_path = "/"
-            print("Diretório alterado para raiz.")
-        else:
-            parts = path.strip("/").split("/")
-            current_directory = self.fs_ops.root
-            for part in parts:
-                for entry in current_directory:
-                    if entry.filename.strip() == part and entry.attributes == DIR_DIRECTORY:
-                        current_directory = self.fs_ops._load_directory(entry.first_block)
-                        break
-                else:
-                    print(f"Erro: Diretório '{path}' não encontrado.")
-                    return
-            self.current_path = path
-            print(f"Diretório alterado para '{path}'.")
+    def handle_write(self, command):
+        """Lida com o comando write."""
+        parts = command.split(" ", 2)
+        if len(parts) != 3:
+            print("Erro: Uso incorreto. Exemplo: write \"string\" rep /caminho/arquivo")
+            return
+
+        try:
+            string = parts[0].strip('"')  # Remove aspas da string
+            rep = int(parts[1])           # Número de repetições
+            path = parts[2].strip()       # Caminho do arquivo
+
+            # Se o caminho não começar com "/", ajusta para o caminho atual
+            if not path.startswith("/"):
+                path = f"{self.current_path}/{path}".replace("//", "/")
+
+            self.fs_ops.write(string, rep, path)
+        except ValueError as e:
+            print(f"Erro: {e}")
+        except FileNotFoundError as e:
+            print(f"Erro: {e}")
+        except Exception as e:
+            print(f"Erro inesperado: {e}")

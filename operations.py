@@ -145,8 +145,73 @@ class FileSystemOperations:
 
         print(f"'{path}' removido com sucesso.")
 
+    def write(self, string, rep, path):
+        """Escreve dados repetidamente em um arquivo, sobrescrevendo-o."""
+        if not path.startswith("/"):
+            raise ValueError("Caminho inválido. Deve começar com '/'.")
+
+        parts = path.strip("/").split("/")
+        file_name = parts[-1]
+        dir_path = "/" + "/".join(parts[:-1]) if len(parts) > 1 else "/"
+
+        self.load_filesystem()
+        current_directory, parent_block = self.navigate_to_directory(dir_path)
+
+        # Localizar o arquivo no diretório
+        dir_entry = self.find_dir_entry(current_directory, file_name)
+        if dir_entry is None:
+            raise FileNotFoundError(f"Arquivo '{file_name}' não encontrado.")
+
+        if dir_entry.attributes != DIR_FILE:
+            raise ValueError(f"O caminho '{file_name}' não é um arquivo.")
+
+        # Preparar os dados para escrita
+        data_to_write = (string * rep).encode('utf-8')
+
+        # Calcular o número de blocos necessários
+        total_size = len(data_to_write)
+        blocks_needed = (total_size + BLOCK_SIZE - 1) // BLOCK_SIZE
+
+        # Liberar blocos existentes
+        if dir_entry.first_block != 0:
+            self.free_fat_blocks(dir_entry.first_block)
+
+        # Alocar novos blocos
+        allocated_blocks = []
+        for _ in range(blocks_needed):
+            free_block = self.fat.find_free_block()
+            if free_block == -1:
+                raise RuntimeError("Erro: Não há blocos livres suficientes para escrita.")
+            allocated_blocks.append(free_block)
+            self.fat.fat[free_block] = FAT_EOF
+
+        # Atualizar a FAT para encadear os blocos
+        for i in range(len(allocated_blocks) - 1):
+            self.fat.fat[allocated_blocks[i]] = allocated_blocks[i + 1]
+
+        # Escrever os dados nos blocos alocados
+        current_data_index = 0
+        for block in allocated_blocks:
+            with open(FILESYSTEM, "r+b") as f:
+                f.seek(block * BLOCK_SIZE)
+                data_chunk = data_to_write[current_data_index:current_data_index + BLOCK_SIZE]
+                f.write(data_chunk)
+                current_data_index += BLOCK_SIZE
+
+        # Atualizar a entrada do diretório
+        dir_entry.first_block = allocated_blocks[0]
+        dir_entry.size = total_size
+
+        # Persistir alterações
+        if parent_block is not None:
+            self._persist_directory(current_directory, parent_block)
+        else:
+            self.persist_changes()
+
+        print(f"'{path}' atualizado com sucesso. Dados escritos: {rep} vezes.")
 
 
+##Funções auxiliares
     def find_dir_entry(self, directory, name):
         for entry in directory:
             if entry.filename.strip() == name and entry.attributes != DIR_EMPTY:
