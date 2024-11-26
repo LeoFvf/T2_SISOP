@@ -23,8 +23,6 @@ class FileSystemShell:
             elif command.startswith("create"):
                 path = command[7:].strip()
                 self.fs_ops.create(path)
-            elif command.startswith("write"):
-                self.handle_write(command[6:].strip())
             elif command == "init":
                 self.fs_ops.initialize_filesystem()
             elif command.startswith("write"):
@@ -42,30 +40,6 @@ class FileSystemShell:
                     print(f"Erro ao remover: {e}")
             else:
                 print("Comando não reconhecido.")
-
-    def handle_write(self, command):
-        """Lida com o comando write no shell."""
-        parts = command.split(" ", 2)
-        if len(parts) != 3:
-            print("Erro: Uso incorreto. Exemplo: write \"string\" rep /caminho/arquivo")
-            return
-
-        try:
-            string = parts[0].strip('"')  # Remove aspas da string
-            rep = int(parts[1])           # Número de repetições
-            path = parts[2].strip()       # Caminho do arquivo
-
-            # Se o caminho não começar com "/", ajusta para o caminho atual
-            if not path.startswith("/"):
-                path = f"{self.current_path}/{path}".replace("//", "/")
-
-            self.fs_ops.write(string, rep, path)
-        except ValueError as e:
-            print(f"Erro: {e}")
-        except FileNotFoundError as e:
-            print(f"Erro: {e}")
-        except Exception as e:
-            print(f"Erro inesperado: {e}")
 
     def handle_load(self):
         """Lida com o comando load no shell."""

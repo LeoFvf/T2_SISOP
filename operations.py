@@ -37,13 +37,22 @@ class FileSystemOperations:
         self.root = [DirectoryEntry() for _ in range(ROOT_ENTRIES)]
 
     def initialize_filesystem(self):
+        """Inicializa o sistema de arquivos."""
         with open(FILESYSTEM, "wb") as f:
+            # Inicializa a FAT
             self.fat.initialize()
             f.write(self.fat.to_bytes())
-            root_bytes = [entry.to_bytes() for entry in self.root]
-            f.write(b"".join(root_bytes))
-            f.write(b"\x00" * (BLOCK_SIZE * (TOTAL_BLOCKS - FAT_BLOCKS - ROOT_BLOCKS)))
+
+            # Inicializa o diretório raiz
+            root_bytes = [DirectoryEntry() for _ in range(ROOT_ENTRIES)]
+            root_block = b"".join(entry.to_bytes() for entry in root_bytes)
+            f.write(root_block)
+
+            # Preenche os blocos de dados restantes com zeros
+            remaining_blocks = BLOCK_SIZE * (TOTAL_BLOCKS - FAT_BLOCKS - ROOT_BLOCKS)
+            f.write(b"\x00" * remaining_blocks)
         print("Sistema de arquivos inicializado.")
+
 
     def load(self):
         """Carrega a FAT e o diretório raiz do sistema de arquivos do disco."""
@@ -70,186 +79,224 @@ class FileSystemOperations:
                 tipo = "Diretório" if entry.attributes == DIR_DIRECTORY else "Arquivo"
                 print(f"{entry.filename.strip():<25} - {tipo} - {entry.size} bytes")
 
-
     def mkdir(self, path):
-        if not path.startswith("/"):
-            print("Erro: Caminho inválido. Deve começar com '/'.")
-            return
-        dir_name = path.strip("/").split("/")[-1]
-        parent_path = "/" + "/".join(path.strip("/").split("/")[:-1]) if "/" in path.strip("/") else "/"
-        if len(dir_name) > 25:
-            print("Erro: Nome do diretório muito longo. Máximo de 25 caracteres.")
-            return
-        self.load_filesystem()
-        current_directory, parent_block = self.navigate_to_directory(parent_path)
-        for entry in current_directory:
-            if entry.attributes == DIR_EMPTY:
-                free_block = self.fat.find_free_block()
-                if free_block == -1:
-                    print("Erro: Não há blocos livres disponíveis.")
-                    return
-                self.fat.fat[free_block] = FAT_EOF
-                entry.filename = dir_name.ljust(25)[:25]
-                entry.attributes = DIR_DIRECTORY
-                entry.first_block = free_block
-                entry.size = 0
-                new_directory = [DirectoryEntry() for _ in range(BLOCK_SIZE // 32)]
-                self._persist_directory(new_directory, free_block)
-                break
-        else:
-            print("Erro: Diretório cheio. Não é possível criar novos diretórios.")
-            return
-        if parent_block is not None:
-            self._persist_directory(current_directory, parent_block)
-        else:
-            self.persist_changes()
-        print(f"Diretório '{dir_name}' criado com sucesso.")
-
-    def create(self, path):
+        """Cria um novo diretório no sistema de arquivos."""
         if not path.startswith("/"):
             raise ValueError("Caminho inválido. Deve começar com '/'.")
-        parts = path.strip("/").split("/")
-        file_name = parts[-1]
-        dir_path = "/" + "/".join(parts[:-1]) if len(parts) > 1 else "/"
-        if len(file_name) > 25:
-            raise ValueError("Erro: Nome do arquivo muito longo. Máximo de 25 caracteres.")
+
+        dir_name = path.strip("/").split("/")[-1]
+        parent_path = "/" + "/".join(path.strip("/").split("/")[:-1]) if "/" in path else "/"
+
+        if len(dir_name) > 25:
+            raise ValueError("Erro: Nome do diretório muito longo. Máximo de 25 caracteres.")
+
         self.load_filesystem()
-        current_directory, parent_block = self.navigate_to_directory(dir_path)
+
+        # Navegar até o diretório pai
+        current_directory, parent_block = self.navigate_to_directory(parent_path)
+
+        # Verificar se o diretório já existe
+        for entry in current_directory:
+            if entry.filename.strip() == dir_name and entry.attributes == DIR_DIRECTORY:
+                raise ValueError(f"Erro: Diretório '{dir_name}' já existe.")
+
+        # Criar o novo diretório
         for entry in current_directory:
             if entry.attributes == DIR_EMPTY:
                 free_block = self.fat.find_free_block()
                 if free_block == -1:
                     raise RuntimeError("Erro: Não há blocos livres disponíveis.")
+
+                # Atualizar a FAT
                 self.fat.fat[free_block] = FAT_EOF
-                entry.filename = file_name.ljust(25)[:25]
-                entry.attributes = DIR_FILE
+
+                # Configurar a entrada do diretório
+                entry.filename = dir_name.ljust(25)[:25]
+                entry.attributes = DIR_DIRECTORY
                 entry.first_block = free_block
                 entry.size = 0
+
+                # Inicializar o bloco alocado com entradas de diretório vazias
+                new_directory = [DirectoryEntry() for _ in range(ROOT_ENTRIES)]
+                self._persist_directory(new_directory, free_block)
                 break
         else:
-            raise RuntimeError("Erro: Diretório cheio. Não é possível criar novos arquivos.")
+            raise RuntimeError("Erro: Diretório cheio. Não é possível criar novos diretórios.")
+
+        # Persistir alterações no diretório pai
         if parent_block is not None:
             self._persist_directory(current_directory, parent_block)
         else:
             self.persist_changes()
-        print(f"Arquivo '{file_name}' criado com sucesso.")
 
-    #Não funciona
-    def unlink(self, path):
-        directory_path, name = self.parse_path(path)
+        print(f"Diretório '{dir_name}' criado com sucesso em '{parent_path}'.")
+
+
+    def create(self, path):
+        """Cria um novo arquivo no diretório especificado."""
+        if not path.startswith("/"):
+            raise ValueError("Caminho inválido. Deve começar com '/'.")
+
+        parts = path.strip("/").split("/")
+        file_name = parts[-1]
+        dir_path = "/" + "/".join(parts[:-1]) if len(parts) > 1 else "/"
+
+        if len(file_name) > 25:
+            raise ValueError("Erro: Nome do arquivo muito longo. Máximo de 25 caracteres.")
+
         self.load_filesystem()
-        directory, dir_block = self.navigate_to_directory(directory_path)
-        dir_entry = self.find_dir_entry(directory, name)
+        current_directory, parent_block = self.navigate_to_directory(dir_path)
 
-        if dir_entry is None:
+        # Verificar se o arquivo já existe
+        for entry in current_directory:
+            if entry.filename.strip() == file_name:
+                raise ValueError(f"Erro: O arquivo '{file_name}' já existe no diretório.")
+
+        # Encontrar uma entrada vazia no diretório
+        for entry in current_directory:
+            if entry.attributes == DIR_EMPTY:
+                free_block = self.fat.find_free_block()
+                if free_block == -1:
+                    raise RuntimeError("Erro: Não há blocos livres disponíveis.")
+
+                # Atualizar a FAT e a entrada do diretório
+                self.fat.fat[free_block] = FAT_EOF
+                entry.filename = file_name.ljust(25)[:25]
+                entry.attributes = DIR_FILE
+                entry.first_block = free_block  # Aloca o primeiro bloco
+                entry.size = 0
+                break
+        else:
+            raise RuntimeError("Erro: Diretório cheio. Não é possível criar novos arquivos.")
+
+        # Persistir as alterações no diretório e na FAT
+        if parent_block is not None:
+            self._persist_directory(current_directory, parent_block)
+        else:
+            self.persist_changes()
+
+        print(f"Arquivo '{file_name}' criado com sucesso no caminho '{path}'.")
+
+    def unlink(self, path):
+        """Exclui um arquivo ou diretório."""
+        # Parse o caminho
+        directory_path, name = self.parse_path(path)
+
+        # Localizar a entrada do diretório
+        self.load_filesystem()
+        directory = self.root if directory_path == "/" else self._load_directory(directory_path)
+        dir_entry = self.find_dir_entry(directory, name)
+        if not dir_entry:
             raise FileNotFoundError(f"Arquivo ou diretório '{name}' não encontrado.")
 
-        if dir_entry.first_block == 0:
-            print(f"O arquivo ou diretório '{name}' não possui blocos alocados.")
-        else:
-            self.free_fat_blocks(dir_entry.first_block)
-
+        # Validar condições
         if dir_entry.attributes == DIR_DIRECTORY:
             if not self.is_directory_empty(dir_entry):
                 raise Exception(f"Diretório '{name}' não está vazio.")
 
+        # Liberar blocos na FAT
+        if dir_entry.first_block != 0:
+            self.free_fat_blocks(dir_entry.first_block)
+
+        # Remover a entrada do diretório
         self.remove_dir_entry(directory, name)
 
-        if dir_block is not None:
-            self._persist_directory(directory, dir_block)
-        else:
-            self.persist_changes()
-
+        # Persistir alterações
+        self.persist_changes()
         print(f"'{path}' removido com sucesso.")
 
+    ##Funções auxiliares
+    def parse_path(self, path):
+        """Divide o caminho em diretório pai e nome."""
+        if not path.startswith("/"):
+            raise ValueError("Caminho inválido. Deve começar com '/'.")
 
-
-##Funções auxiliares
+        parts = path.strip("/").split("/")
+        if len(parts) == 1:
+            return "/", parts[0]  # Diretório raiz e nome do arquivo/diretório
+        return "/".join(parts[:-1]), parts[-1]  # Diretório pai e nome
+    
     def find_dir_entry(self, directory, name):
+        """Procura por uma entrada de diretório com o nome especificado."""
         for entry in directory:
             if entry.filename.strip() == name and entry.attributes != DIR_EMPTY:
-                if not (0 <= entry.first_block < len(self.fat.fat)):
-                    raise ValueError(f"Entrada com bloco inicial inválido: {entry.first_block}")
                 return entry
         return None
-
+    
     def is_directory_empty(self, dir_entry):
+        """Verifica se um diretório está vazio."""
         directory_block = self._load_directory(dir_entry.first_block)
         for entry in directory_block:
             if entry.attributes != DIR_EMPTY:
                 return False
         return True
-
+    
     def free_fat_blocks(self, first_block):
-        """Libera os blocos na FAT começando pelo bloco especificado."""
+        if not (0 <= first_block < len(self.fat.fat)):
+            raise ValueError(f"Bloco inicial inválido: {first_block}")
+
+        current_block = first_block
+        while current_block != FAT_EOF:
+            if not (0 <= current_block < len(self.fat.fat)):
+                raise ValueError(f"Bloco inválido na FAT: {current_block}")
+
+            next_block = self.fat.fat[current_block]
+            self.fat.fat[current_block] = FAT_FREE  # Marca o bloco como livre
+            current_block = next_block
+
+
+    def remove_dir_entry(self, directory, name):
+        """Remove a entrada de diretório pelo nome."""
+        for entry in directory:
+            if entry.filename.strip() == name:
+                entry.attributes = DIR_EMPTY  # Marca como vazio
+                entry.first_block = 0
+                entry.size = 0
+                return
+            
+    def persist_changes(self):
+        """Persiste a FAT e o diretório raiz no disco."""
+        with open(FILESYSTEM, "r+b") as f:
+            # Atualiza a FAT
+            f.seek(0)
+            f.write(self.fat.to_bytes())
+
+            # Atualiza o diretório raiz
+            root_bytes = [entry.to_bytes() for entry in self.root]
+            f.seek(FAT_BLOCKS * BLOCK_SIZE)
+            f.write(b"".join(root_bytes))
+
+    def check_for_loops(self, first_block):
+        """Verifica se existe um loop na FAT a partir do bloco especificado."""
         if first_block == 0:
-            return  # Nenhum bloco a liberar
+            print("Nenhum bloco alocado; nenhum loop possível.")
+            return False
 
         visited_blocks = set()
         current_block = first_block
 
         while current_block != FAT_EOF:
             if current_block in visited_blocks:
-                raise RuntimeError(f"Loop detectado na FAT com o bloco {current_block}.")
+                print(f"Loop detectado na FAT: {visited_blocks} -> {current_block}")
+                return True  # Loop detectado
             visited_blocks.add(current_block)
 
             if not (0 <= current_block < len(self.fat.fat)):
                 raise ValueError(f"Bloco inválido na FAT: {current_block}")
 
-            next_block = self.fat.fat[current_block]
-            self.fat.fat[current_block] = FAT_FREE
-            current_block = next_block
+            current_block = self.fat.fat[current_block]
 
-        print(f"Blocos liberados: {visited_blocks}")
-
-    def remove_dir_entry(self, directory, name):
-        for entry in directory:
-            if entry.filename.strip() == name:
-                entry.attributes = DIR_EMPTY
-                entry.first_block = 0
-                entry.size = 0
-                entry.filename = ''
-                return
-
-    def persist_changes(self):
-        with open(FILESYSTEM, "r+b") as f:
-            f.seek(0)
-            f.write(self.fat.to_bytes())
-            root_bytes = [entry.to_bytes() for entry in self.root]
-            f.seek(FAT_BLOCKS * BLOCK_SIZE)
-            f.write(b"".join(root_bytes))
-
-    def parse_path(self, path):
-        if not path.startswith("/"):
-            raise ValueError("Caminho inválido. Deve começar com '/'.")
-        parts = path.strip("/").split("/")
-        if len(parts) == 1:
-            return "/", parts[0]
-        return "/" + "/".join(parts[:-1]), parts[-1]
-
-    def _load_directory(self, block_number):
-        with open(FILESYSTEM, "rb") as f:
-            f.seek(block_number * BLOCK_SIZE)
-            data = f.read(BLOCK_SIZE)
-            entries = []
-            for i in range(BLOCK_SIZE // 32):
-                entry_data = data[i * 32: (i + 1) * 32]
-                entry = DirectoryEntry.from_bytes(entry_data)
-                entries.append(entry)
-            return entries
-
-    def _persist_directory(self, directory, block_number):
-        with open(FILESYSTEM, "r+b") as f:
-            f.seek(block_number * BLOCK_SIZE)
-            directory_data = b"".join(entry.to_bytes() for entry in directory)
-            f.write(directory_data)
+        return False
 
     def navigate_to_directory(self, path):
+        """Navega até o diretório especificado."""
         if path == "/":
             return self.root, None
+
+        parts = path.strip("/").split("/")
         current_directory = self.root
         parent_block = None
-        parts = path.strip("/").split("/")
+
         for part in parts:
             for entry in current_directory:
                 if entry.filename.strip() == part and entry.attributes == DIR_DIRECTORY:
@@ -257,8 +304,26 @@ class FileSystemOperations:
                     current_directory = self._load_directory(parent_block)
                     break
             else:
-                raise FileNotFoundError(f"Erro: Diretório '{path}' não encontrado.")
+                raise FileNotFoundError(f"Diretório '{path}' não encontrado.")
+
         return current_directory, parent_block
+
+
+    def _load_directory(self, block_number):
+        """Carrega um diretório a partir de um bloco."""
+        with open(FILESYSTEM, "rb") as f:
+            f.seek(block_number * BLOCK_SIZE)
+            data = f.read(BLOCK_SIZE)
+            return [DirectoryEntry.from_bytes(data[i * 32: (i + 1) * 32]) for i in range(ROOT_ENTRIES)]
+
+
+    def _persist_directory(self, directory, block_number):
+        """Persiste um diretório no disco."""
+        with open(FILESYSTEM, "r+b") as f:
+            f.seek(block_number * BLOCK_SIZE)
+            directory_data = b"".join(entry.to_bytes() for entry in directory)
+            f.write(directory_data)
+
 
     def load_filesystem(self):
         if not os.path.exists(FILESYSTEM):
