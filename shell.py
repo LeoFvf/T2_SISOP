@@ -23,6 +23,8 @@ class FileSystemShell:
             elif command.startswith("create"):
                 path = command[7:].strip()
                 self.fs_ops.create(path)
+            elif command.startswith("read"):
+                self.handle_read(command[5:].strip())
             elif command == "init":
                 self.fs_ops.initialize_filesystem()
             elif command.startswith("write"):
@@ -50,3 +52,36 @@ class FileSystemShell:
             print(f"Erro: {e}")
         except Exception as e:
             print(f"Erro inesperado: {e}")
+
+    def handle_write(self, params):
+            """Lida com o comando write no shell."""
+            try:
+                parts = params.split(" ", 2)
+                if len(parts) != 3:
+                    print("Uso: write <string> [rep] [/caminho/arquivo]")
+                    return
+
+                string, rep, path = parts
+                rep = int(rep)  # Converte a repetição para inteiro
+                self.fs_ops.write_string(string, rep, path)
+            except ValueError:
+                print("Erro: O número de repetições (rep) deve ser um valor inteiro.")
+            except FileNotFoundError as e:
+                print(e)
+            except Exception as e:
+                print(f"Erro ao escrever no arquivo: {e}")
+
+    def handle_read(self, params):
+        """Lida com o comando read no shell."""
+        try:
+            path = params.strip()
+            if not path:
+                print("Uso: read [/caminho/arquivo]")
+                return
+            content = self.fs_ops.read_file(path)
+            print(f"Conteúdo de '{path}':")
+            print(content)
+        except FileNotFoundError as e:
+            print(e)
+        except Exception as e:
+            print(f"Erro ao ler o arquivo: {e}")
