@@ -45,6 +45,32 @@ class FileSystemOperations:
             f.write(b"\x00" * (BLOCK_SIZE * (TOTAL_BLOCKS - FAT_BLOCKS - ROOT_BLOCKS)))
         print("Sistema de arquivos inicializado.")
 
+    def load(self):
+        """Carrega a FAT e o diretório raiz do sistema de arquivos do disco."""
+        if not os.path.exists(FILESYSTEM):
+            raise FileNotFoundError("Sistema de arquivos não encontrado. Execute o comando 'init' primeiro.")
+
+        with open(FILESYSTEM, "rb") as f:
+            # Carregar a FAT
+            fat_data = f.read(FAT_BLOCKS * BLOCK_SIZE)
+            self.fat.from_bytes(fat_data)
+
+            # Carregar o diretório raiz
+            root_data = f.read(ROOT_BLOCKS * BLOCK_SIZE)
+            self.root = [DirectoryEntry.from_bytes(root_data[i * 32: (i + 1) * 32]) for i in range(ROOT_ENTRIES)]
+
+        print("Sistema de arquivos carregado com sucesso.")
+
+    def list_directory(self, path="/"):
+        self.load_filesystem()
+        current_directory, _ = self.navigate_to_directory(path)
+        print(f"Conteúdo do diretório '{path}':")
+        for entry in current_directory:
+            if entry.attributes != DIR_EMPTY:
+                tipo = "Diretório" if entry.attributes == DIR_DIRECTORY else "Arquivo"
+                print(f"{entry.filename.strip():<25} - {tipo} - {entry.size} bytes")
+
+
     def mkdir(self, path):
         if not path.startswith("/"):
             print("Erro: Caminho inválido. Deve começar com '/'.")
@@ -108,15 +134,6 @@ class FileSystemOperations:
             self.persist_changes()
         print(f"Arquivo '{file_name}' criado com sucesso.")
 
-    def list_directory(self, path="/"):
-        self.load_filesystem()
-        current_directory, _ = self.navigate_to_directory(path)
-        print(f"Conteúdo do diretório '{path}':")
-        for entry in current_directory:
-            if entry.attributes != DIR_EMPTY:
-                tipo = "Diretório" if entry.attributes == DIR_DIRECTORY else "Arquivo"
-                print(f"{entry.filename.strip():<25} - {tipo} - {entry.size} bytes")
-
     #Não funciona
     def unlink(self, path):
         directory_path, name = self.parse_path(path)
@@ -145,70 +162,6 @@ class FileSystemOperations:
 
         print(f"'{path}' removido com sucesso.")
 
-    def write(self, string, rep, path):
-        """Escreve dados repetidamente em um arquivo, sobrescrevendo-o."""
-        if not path.startswith("/"):
-            raise ValueError("Caminho inválido. Deve começar com '/'.")
-
-        parts = path.strip("/").split("/")
-        file_name = parts[-1]
-        dir_path = "/" + "/".join(parts[:-1]) if len(parts) > 1 else "/"
-
-        self.load_filesystem()
-        current_directory, parent_block = self.navigate_to_directory(dir_path)
-
-        # Localizar o arquivo no diretório
-        dir_entry = self.find_dir_entry(current_directory, file_name)
-        if dir_entry is None:
-            raise FileNotFoundError(f"Arquivo '{file_name}' não encontrado.")
-
-        if dir_entry.attributes != DIR_FILE:
-            raise ValueError(f"O caminho '{file_name}' não é um arquivo.")
-
-        # Preparar os dados para escrita
-        data_to_write = (string * rep).encode('utf-8')
-
-        # Calcular o número de blocos necessários
-        total_size = len(data_to_write)
-        blocks_needed = (total_size + BLOCK_SIZE - 1) // BLOCK_SIZE
-
-        # Liberar blocos existentes
-        if dir_entry.first_block != 0:
-            self.free_fat_blocks(dir_entry.first_block)
-
-        # Alocar novos blocos
-        allocated_blocks = []
-        for _ in range(blocks_needed):
-            free_block = self.fat.find_free_block()
-            if free_block == -1:
-                raise RuntimeError("Erro: Não há blocos livres suficientes para escrita.")
-            allocated_blocks.append(free_block)
-            self.fat.fat[free_block] = FAT_EOF
-
-        # Atualizar a FAT para encadear os blocos
-        for i in range(len(allocated_blocks) - 1):
-            self.fat.fat[allocated_blocks[i]] = allocated_blocks[i + 1]
-
-        # Escrever os dados nos blocos alocados
-        current_data_index = 0
-        for block in allocated_blocks:
-            with open(FILESYSTEM, "r+b") as f:
-                f.seek(block * BLOCK_SIZE)
-                data_chunk = data_to_write[current_data_index:current_data_index + BLOCK_SIZE]
-                f.write(data_chunk)
-                current_data_index += BLOCK_SIZE
-
-        # Atualizar a entrada do diretório
-        dir_entry.first_block = allocated_blocks[0]
-        dir_entry.size = total_size
-
-        # Persistir alterações
-        if parent_block is not None:
-            self._persist_directory(current_directory, parent_block)
-        else:
-            self.persist_changes()
-
-        print(f"'{path}' atualizado com sucesso. Dados escritos: {rep} vezes.")
 
 
 ##Funções auxiliares
@@ -228,9 +181,10 @@ class FileSystemOperations:
         return True
 
     def free_fat_blocks(self, first_block):
+        """Libera os blocos na FAT começando pelo bloco especificado."""
         if first_block == 0:
-            raise ValueError("Bloco inicial inválido: 0")
-        
+            return  # Nenhum bloco a liberar
+
         visited_blocks = set()
         current_block = first_block
 
@@ -238,16 +192,15 @@ class FileSystemOperations:
             if current_block in visited_blocks:
                 raise RuntimeError(f"Loop detectado na FAT com o bloco {current_block}.")
             visited_blocks.add(current_block)
-            
+
             if not (0 <= current_block < len(self.fat.fat)):
                 raise ValueError(f"Bloco inválido na FAT: {current_block}")
-            
+
             next_block = self.fat.fat[current_block]
             self.fat.fat[current_block] = FAT_FREE
             current_block = next_block
 
         print(f"Blocos liberados: {visited_blocks}")
-
 
     def remove_dir_entry(self, directory, name):
         for entry in directory:
